@@ -45,6 +45,12 @@ func handleStatic(resposta http.ResponseWriter, requisicao *http.Request) {
 	cleanPath := path.Clean("/" + requisicao.URL.Path)
 	caminho := filepath.Join(root, cleanPath)
 
+	info, err := os.Stat(caminho)
+	if err == nil && info.IsDir() && !strings.HasSuffix(requisicao.URL.Path, "/") {
+		http.Redirect(resposta, requisicao, requisicao.URL.Path+"/", http.StatusMovedPermanently)
+		return
+	}
+
 	if !strings.HasPrefix(caminho, root) {
 		resposta.WriteHeader(http.StatusForbidden)
 		resposta.Write([]byte("<h1>403 Forbidden</h1><p>Você não pode acessar fora da pasta root.</p>"))
@@ -58,6 +64,9 @@ func handleStatic(resposta http.ResponseWriter, requisicao *http.Request) {
 	ext := path.Ext(caminho)
 
 	contentType := mime.TypeByExtension(ext)
+	if ext == ".js" {
+		contentType = "text/javascript"
+	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
@@ -66,54 +75,80 @@ func handleStatic(resposta http.ResponseWriter, requisicao *http.Request) {
 		contentType = "text/html; charset=utf-8"
 
 		entradas, err := os.ReadDir(caminho)
-		if err != nil {
-			resposta.WriteHeader(http.StatusNotFound)
-			construtor.WriteString(NotFoundTemplate)
-		} else {
 
-			construtor.WriteString(strings.Replace(IndexBeginTemplate, "{{FILE_PATH}}", caminho, -1))
-
-			if requisicao.URL.Path != "/" {
-				voltarUrl := path.Join(requisicao.URL.Path, "..")
-				voltar := strings.Replace(FileNameTemplate, "{{FILE_NAME_TEXT}}", "..", -1)
-				voltar = strings.Replace(voltar, "{{FILE_NAME_URL}}", voltarUrl, -1)
-				construtor.WriteString(voltar)
+		indexPath := filepath.Join(caminho, "index.html")
+		if _, err := os.Stat(indexPath); err == nil {
+			arquivo, err := os.Open(indexPath)
+			if err == nil {
+				defer arquivo.Close()
+				resposta.Header().Set("Content-Type", "text/html; charset=utf-8")
+				resposta.WriteHeader(http.StatusOK)
+				io.Copy(resposta, arquivo)
+				return
 			}
-
-			for _, entrada := range entradas {
-				nome := entrada.Name()
-
-				texto := ""
-				url := nome
-
-				if entrada.IsDir() {
-					texto = directoryIconSvg + " " + nome
-					url = nome + "/"
-				} else {
-					texto = fileIconSvg + " " + nome
-				}
-
-				linha := FileNameTemplate
-				linha = strings.Replace(linha, "{{FILE_NAME_TEXT}}", texto, -1)
-				linha = strings.Replace(linha, "{{FILE_NAME_URL}}", url, -1)
-
-				construtor.WriteString(linha)
-			}
-
-			construtor.WriteString(IndexEndTemplate)
 		}
+
+		if err != nil {
+			resposta.Header().Set("Content-Type", "text/html; charset=utf-8")
+			resposta.WriteHeader(http.StatusNotFound)
+			resposta.Write([]byte(NotFoundTemplate))
+			return
+		}
+
+		relPath, err := filepath.Rel(root, caminho)
+		if err != nil {
+			relPath = ""
+		}
+
+		displayPath := "/" + filepath.ToSlash(relPath)
+		if displayPath == "/" {
+			displayPath = "/"
+		}
+
+		construtor.WriteString(strings.Replace(IndexBeginTemplate, "{{FILE_PATH}}", displayPath, -1))
+
+		if requisicao.URL.Path != "/" {
+			voltarUrl := path.Join(requisicao.URL.Path, "..")
+			voltar := strings.Replace(FileNameTemplate, "{{FILE_NAME_TEXT}}", "..", -1)
+			voltar = strings.Replace(voltar, "{{FILE_NAME_URL}}", voltarUrl, -1)
+			construtor.WriteString(voltar)
+		}
+
+		for _, entrada := range entradas {
+			nome := entrada.Name()
+
+			texto := ""
+			url := nome
+
+			if entrada.IsDir() {
+				texto = directoryIconSvg + " " + nome
+				url = nome + "/"
+			} else {
+				texto = fileIconSvg + " " + nome
+			}
+
+			linha := FileNameTemplate
+			linha = strings.Replace(linha, "{{FILE_NAME_TEXT}}", texto, -1)
+			linha = strings.Replace(linha, "{{FILE_NAME_URL}}", url, -1)
+
+			construtor.WriteString(linha)
+		}
+
+		construtor.WriteString(IndexEndTemplate)
 	} else {
-		ext = mime.TypeByExtension(ext)
 		arquivo, err := os.Open(caminho)
 		if err != nil {
-			construtor.WriteString("Deu um erro ao tentar abrir o arquivo: %s")
+			resposta.Header().Set("Content-Type", "text/html; charset=utf-8")
+			resposta.WriteHeader(http.StatusNotFound)
+			resposta.Write([]byte(NotFoundTemplate))
+			return
 		}
 		defer arquivo.Close()
 
 		io.Copy(&construtor, arquivo)
 	}
-	resposta.WriteHeader(http.StatusOK)
 	resposta.Header().Set("Content-Type", contentType)
+	resposta.WriteHeader(http.StatusOK)
 
 	_, _ = resposta.Write([]byte(construtor.String()))
 }
